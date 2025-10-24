@@ -2,7 +2,6 @@ import sys
 import threading
 import time
 import datetime
-import requests
 from collections import defaultdict, deque, Counter
 from scapy.all import sniff, wrpcap, conf, get_if_list
 from scapy.layers.inet import IP, TCP, UDP
@@ -19,35 +18,6 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import pandas as pd
 
-# helper
-def get_vendor(mac):
-    if not mac:
-        return "Unknown"
-    # normalize and build variants (original, hex-only, OUI)
-    s = mac.strip().upper()
-    hexonly = "".join(c for c in s if c in "0123456789ABCDEF")
-    oui = None
-    if len(hexonly) >= 6:
-        oui = ":".join([hexonly[i:i+2] for i in range(0, 6, 2)])
-    urls = []
-    # try the original, hex-only, then OUI (if available)
-    urls.append(f"https://api.macvendors.com/{s}")
-    if hexonly:
-        urls.append(f"https://api.macvendors.com/{hexonly}")
-    if oui:
-        urls.append(f"https://api.macvendors.com/{oui}")
-    headers = {"User-Agent": "VisualNetworkAnalyzer/1.0"}
-    for url in urls:
-        try:
-            resp = requests.get(url, timeout=3, headers=headers)
-            if resp.status_code == 200 and resp.text:
-                text = resp.text.strip()
-                if text and "error" not in text.lower():
-                    return text
-        except requests.RequestException:
-            continue
-    return "Unknown Vendor"
-
 class PacketStats:
     def __init__(self, window_seconds=60):
         self.lock = threading.RLock()
@@ -57,9 +27,6 @@ class PacketStats:
         self.total_bytes_recent = deque()  
         self.window_seconds = window_seconds
         self.total_packets = 0
-        self.ip_to_mac = {}        
-        self.mac_vendor_cache = {}  
-        self.vendor_lock = threading.RLock()
 
     def add_packet(self, pkt):
         with self.lock:
@@ -78,20 +45,6 @@ class PacketStats:
                 eth = pkt.getlayer(Ether)
                 src_mac = eth.src
                 dst_mac = eth.dst
-                mac = pkt[Ether].src
-                if pkt.haslayer(IP):
-                    ip_src = pkt[IP].src
-                    self.ip_to_mac[ip_src] = mac
-
-                    # if vendor not yet resolved, mark as resolving and start background lookup
-                    if mac not in self.mac_vendor_cache:
-                        with self.vendor_lock:
-                            # mark so we don't spawn multiple lookups for same MAC
-                            self.mac_vendor_cache.setdefault(mac, "Resolving")
-                        threading.Thread(
-                            target=self.resolve_vendor_background, args=(mac,), daemon=True
-                        ).start()
-
             if pkt.haslayer(ARP):
                 proto = "ARP"
                 if pkt.haslayer(ARP):
@@ -144,21 +97,13 @@ class PacketStats:
                     proto_counter = info.get("proto_counter", Counter())
                     most_proto = proto_counter.most_common(1)[0][0] if proto_counter else "N/A"
 
-                vendor = info.get("vendor")
-                if not vendor:
-                    mac = self.ip_to_mac.get(ip)
-                    if mac:
-                        vendor = self.mac_vendor_cache.get(mac, "Unknown")
-                    else:
-                        vendor = "Unknown"
                 rows.append({
                     "ip": ip,
                     "protocol": most_proto,
                     "packets": info.get("packets", 0),
                     "bytes": info.get("bytes", 0),
                     "first_seen": info.get("first_seen"),
-                    "last_seen": info.get("last_seen"),
-                    "vendor": vendor
+                    "last_seen": info.get("last_seen")
                 })
             return rows
     
@@ -223,23 +168,6 @@ class PacketStats:
     def export_pcap(self, path):
         with self.lock:
             wrpcap(path, self.pkts)
-
-    def resolve_vendor_background(self, mac):
-        vendor = get_vendor(mac)
-        # only overwrite cache if it's still unresolved/resolving or currently unknown;
-        # do not clobber a previously-resolved vendor with a transient "Unknown"
-        with self.vendor_lock:
-            existing = self.mac_vendor_cache.get(mac)
-            if existing and existing.lower() not in ("resolving", "unknown"):
-                # keep existing good value
-                vendor_to_set = existing
-            else:
-                vendor_to_set = vendor or "Unknown"
-            self.mac_vendor_cache[mac] = vendor_to_set
-
-        for ip, saved_mac in self.ip_to_mac.items():
-            if saved_mac == mac and ip in self.ip_stats:
-                self.ip_stats[ip]["vendor"] = vendor_to_set
 
 class CaptureWorker(QtCore.QObject):
     packet_signal = pyqtSignal(object)
@@ -328,8 +256,8 @@ class MainWindow(QMainWindow):
         left_box = QVBoxLayout()
         central_row.addLayout(left_box, 2)
         left_box.addWidget(QLabel("Discovered Devices (by IP)"))
-        self.device_table = QTableWidget(0, 7)
-        self.device_table.setHorizontalHeaderLabels(["IP", "Vendor", "Protocol", "Packets", "Bytes", "First Seen", "Last Seen"])
+        self.device_table = QTableWidget(0, 6)
+        self.device_table.setHorizontalHeaderLabels(["IP", "Protocol", "Packets", "Bytes", "First Seen", "Last Seen"])
         self.device_table.verticalHeader().setVisible(False)
         self.device_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.device_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
@@ -466,14 +394,13 @@ class MainWindow(QMainWindow):
         self.device_table.setRowCount(len(rows))
         for r, info in enumerate(rows):
             self.device_table.setItem(r, 0, QTableWidgetItem(info["ip"]))
-            self.device_table.setItem(r, 1, QTableWidgetItem(info.get("vendor", "Unavailable")))
-            self.device_table.setItem(r, 2, QTableWidgetItem(info["protocol"]))
-            self.device_table.setItem(r, 3, QTableWidgetItem(str(info["packets"])))
-            self.device_table.setItem(r, 4, QTableWidgetItem(str(info["bytes"])))
+            self.device_table.setItem(r, 1, QTableWidgetItem(info["protocol"]))
+            self.device_table.setItem(r, 2, QTableWidgetItem(str(info["packets"])))
+            self.device_table.setItem(r, 3, QTableWidgetItem(str(info["bytes"])))
             fs = info["first_seen"].strftime("%H:%M:%S") if info["first_seen"] else ""
             ls = info["last_seen"].strftime("%H:%M:%S") if info["last_seen"] else ""
-            self.device_table.setItem(r, 5, QTableWidgetItem(fs))
-            self.device_table.setItem(r, 6, QTableWidgetItem(ls))
+            self.device_table.setItem(r, 4, QTableWidgetItem(fs))
+            self.device_table.setItem(r, 5, QTableWidgetItem(ls))
 
         # Update Protocol Distribution graph
         self.proto_canvas.axes.clear()
