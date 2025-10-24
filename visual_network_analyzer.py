@@ -17,6 +17,7 @@ matplotlib.use("Qt5Agg")
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import pandas as pd
+import socket
 
 class PacketStats:
     def __init__(self, window_seconds=60):
@@ -210,6 +211,7 @@ class MplCanvas(FigureCanvas):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.hostname_cache = {}
         self.setWindowTitle("Visual Network Traffic Analyzer - Prototype")
         self.setGeometry(150, 100, 1100, 700)
         self.stats = PacketStats(window_seconds=60)
@@ -286,6 +288,22 @@ class MainWindow(QMainWindow):
         self.refresh_timer.timeout.connect(self.refresh_ui)
         self.refresh_timer.start(1000)
         self.known_ips = set()
+
+    def resolve_hostname_async(self, ip, callback):
+        if ip in self.hostname_cache:
+            callback(self.hostname_cache[ip])
+            return
+
+        def worker():
+            try:
+                hostname = socket.gethostbyaddr(ip)[0]
+            except Exception:
+                hostname = "N/A"
+            self.hostname_cache[ip] = hostname
+            QtCore.QMetaObject.invokeMethod(self, lambda: callback(hostname), Qt.QueuedConnection)
+
+        threading.Thread(target=worker, daemon=True).start()
+
 
     def _populate_interfaces(self):
         self.iface_combo.clear()
@@ -422,32 +440,60 @@ class MainWindow(QMainWindow):
         self.throughput_canvas.axes.clear()
         if ip_filter:
             rel_times, vals = stats["throughput"]
+            # Instead of relative times, use absolute seconds modulo minute/second
+            abs_times = [rt for rt in rel_times]  # these are already timestamps in seconds
         else:
-            rel_times, vals = self.stats.get_throughput_series()
+            abs_times, vals = self.stats.get_throughput_series()
 
-        if rel_times:
-            t = [rt - rel_times[0] for rt in rel_times]
+        if abs_times:
+            # Convert epoch timestamps to human-readable seconds (optional: modulo minute)
+            t = [int(rt % 60) for rt in abs_times]  # seconds within the minute
             self.throughput_canvas.axes.plot(t, vals, marker='o')
-            self.throughput_canvas.axes.set_xlabel("Seconds")
+            self.throughput_canvas.axes.set_xlabel("Seconds (within minute)")
             self.throughput_canvas.axes.set_ylabel("Bytes")
         else:
             self.throughput_canvas.axes.text(0.5, 0.5, "No throughput data", ha='center', va='center')
         self.throughput_canvas.draw()
 
-        # Update Top Talkers
+
+        # Update Top Talkers with hostnames
         self.top_talkers_canvas.axes.clear()
         if ip_filter:
             ips = [ip_filter]
             packets = [stats["packets"]]
         else:
             ips, packets = self.stats.get_top_talkers(topn=5)
-        if packets:
-            self.top_talkers_canvas.axes.barh(ips, packets, color='orange')
-            self.top_talkers_canvas.axes.set_xlabel("Packets")
-            self.top_talkers_canvas.axes.set_title("Top Talkers")
+
+        def draw_chart(hostnames):
+            self.top_talkers_canvas.axes.clear()
+            if packets:
+                self.top_talkers_canvas.axes.barh(hostnames, packets, color='orange')
+                self.top_talkers_canvas.axes.set_xlabel("Packets")
+                self.top_talkers_canvas.axes.set_title("Top Talkers")
+            else:
+                self.top_talkers_canvas.axes.text(0.5, 0.5, "No data", ha='center', va='center')
+            self.top_talkers_canvas.draw()
+
+        # resolve hostnames asynchronously
+        hostnames = []
+        remaining = len(ips)
+
+        if remaining == 0:
+            draw_chart([])
         else:
-            self.top_talkers_canvas.axes.text(0.5, 0.5, "No data", ha='center', va='center')
-        self.top_talkers_canvas.draw()
+            def make_callback(index):
+                def cb(hostname):
+                    nonlocal remaining
+                    hostnames[index] = hostname
+                    remaining -= 1
+                    if remaining == 0:
+                        draw_chart(hostnames)
+                return cb
+
+            hostnames = ["Resolving..."] * len(ips)
+            for i, ip in enumerate(ips):
+                self.resolve_hostname_async(ip, make_callback(i))
+
 
 
     def export_pcap(self):
