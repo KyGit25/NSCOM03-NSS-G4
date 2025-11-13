@@ -71,7 +71,7 @@ To verify that your analyzer captures the same packets as Wireshark:
 ---
 
 ## Author
-Created by:
+Created by:<br>
 **Owen San Luis**<br>
 **Kyle Maristela**<br>
 **Evan Andrew Pinca**  
