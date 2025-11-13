@@ -72,9 +72,9 @@ To verify that your analyzer captures the same packets as Wireshark:
 
 ## Author
 Created by:<br>
-**Owen San Luis**<br>
-**Kyle Maristela**<br>
-**Evan Andrew Pinca**  
-In partial fulfillment of the requirements for NSCOM03 – Network Simulation Study,
+- **Owen San Luis**<br>
+- **Kyle Maristela**<br>
+- **Evan Andrew Pinca**  
+In partial fulfillment of the requirements for NSCOM03 – Network Simulation Study,<br>
 De La Salle University (DLSU)
 (Visual Network Traffic Analyzer Prototype)
