@@ -39,7 +39,7 @@ Python 3.8 or newer is recommended.
 
 ---
 
-## 🧪 Testing with Wireshark
+## Testing with Wireshark
 To verify that your analyzer captures the same packets as Wireshark:
 1. **Open Wireshark** and select the same interface used in the analyzer.  
 2. **Start both** Wireshark and the Visual Network Traffic Analyzer **at the same time**.  
