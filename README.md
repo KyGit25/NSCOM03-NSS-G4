@@ -76,6 +76,5 @@ Created by:<br>
 - **Kyle Maristela**<br>
 - **Evan Andrew Pinca**
 
-In partial fulfillment of the requirements for NSCOM03 – Network Simulation Study,<br>
-De La Salle University (DLSU)
-(Visual Network Traffic Analyzer Prototype)
+In partial fulfillment of the requirements for NSCOM03 – Network Simulation Study<br>
+De La Salle University (DLSU)<br>
